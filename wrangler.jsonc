@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "quiz-funnel",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "quiz-funnel",
+      "database_id": "your-d1-database-id-here"
+    }
+  ],
+  "triggers": {
+    "crons": ["*/1 * * * *"]
+  },
+  "vars": {
+    "APP_NAME": "Quiz Funnel"
+  }
+}
