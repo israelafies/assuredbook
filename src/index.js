@@ -47,6 +47,94 @@ function escapeHtml(v) {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 }
+// ---------------------------------------------------------------------------
+// Landing-page theme + sizing helpers
+// ---------------------------------------------------------------------------
+function quizTheme(template) {
+  const themes = {
+    default: {
+      hero: 'bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 text-white',
+      badgeText: 'text-indigo-300',
+      button: 'bg-white text-indigo-950',
+      bodyText: 'text-slate-300',
+      subtitleText: 'text-indigo-100',
+      sectionCard: 'bg-slate-50 border-slate-200',
+      sectionHeading: 'text-slate-950',
+      sectionBody: 'text-slate-600',
+    },
+    romantic: {
+      hero: 'bg-gradient-to-br from-rose-500 via-pink-500 to-fuchsia-600 text-white',
+      badgeText: 'text-rose-100',
+      button: 'bg-white text-rose-600',
+      bodyText: 'text-rose-50',
+      subtitleText: 'text-rose-100',
+      sectionCard: 'bg-rose-50 border-rose-100',
+      sectionHeading: 'text-rose-900',
+      sectionBody: 'text-rose-800',
+    },
+    warm: {
+      hero: 'bg-gradient-to-br from-amber-500 via-orange-500 to-red-500 text-white',
+      badgeText: 'text-amber-100',
+      button: 'bg-white text-amber-700',
+      bodyText: 'text-amber-50',
+      subtitleText: 'text-amber-100',
+      sectionCard: 'bg-amber-50 border-amber-100',
+      sectionHeading: 'text-amber-900',
+      sectionBody: 'text-amber-800',
+    },
+    minimal: {
+      hero: 'bg-white text-slate-900 border-b border-slate-200',
+      badgeText: 'text-slate-500',
+      button: 'bg-slate-900 text-white',
+      bodyText: 'text-slate-600',
+      subtitleText: 'text-slate-600',
+      sectionCard: 'bg-white border-slate-200',
+      sectionHeading: 'text-slate-950',
+      sectionBody: 'text-slate-600',
+    },
+    bold: {
+      hero: 'bg-black text-white',
+      badgeText: 'text-lime-400',
+      button: 'bg-lime-400 text-black',
+      bodyText: 'text-slate-300',
+      subtitleText: 'text-slate-300',
+      sectionCard: 'bg-slate-900 text-white border-slate-800',
+      sectionHeading: 'text-white',
+      sectionBody: 'text-slate-300',
+    },
+  };
+  return themes[template] || themes.default;
+}
+
+function textScale(scale) {
+  const scales = {
+    sm: { title: 'text-2xl sm:text-3xl', subtitle: 'text-base', body: 'text-sm sm:text-base' },
+    md: { title: 'text-3xl sm:text-5xl', subtitle: 'text-lg', body: 'text-base sm:text-lg' },
+    lg: { title: 'text-4xl sm:text-6xl', subtitle: 'text-xl', body: 'text-lg sm:text-xl' },
+    xl: { title: 'text-5xl sm:text-7xl', subtitle: 'text-2xl', body: 'text-xl sm:text-2xl' },
+  };
+  return scales[scale] || scales.md;
+}
+
+function imageSizeClass(size) {
+  const sizes = {
+    sm: 'max-w-xs',
+    md: 'max-w-sm',
+    lg: 'max-w-md',
+    xl: 'max-w-lg',
+    full: 'w-full max-w-3xl',
+  };
+  return sizes[size] || sizes.md;
+}
+
+function parseQuizSections(rawSections) {
+  if (!rawSections) return [];
+  try {
+    const parsed = JSON.parse(rawSections);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(s => s && typeof s === 'object');
+  } catch { return []; }
+    }
 const e = escapeHtml;
 
 function slugify(text) {
@@ -235,25 +323,57 @@ async function quiz_search(env, search, status, limit = 100, offset = 0) {
 }
 async function quiz_create(env, data) {
   const res = await env.DB.prepare(
-    `INSERT INTO quizzes (uuid, title, subtitle, description, instructions, cover_image, logo, brand_name, primary_cta, result_cta, whatsapp_cta, status, slug)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO quizzes (
+       uuid, title, subtitle, description, instructions,
+       cover_image, logo, brand_name, primary_cta, result_cta, whatsapp_cta,
+       status, slug, template, hero_image, hero_image_size, text_scale,
+       accent_color, about_me_title, about_me_text, about_me_image, about_me_image_size,
+       sections
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(
     uuid4(),
     data.title, data.subtitle ?? null, data.description ?? null, data.instructions ?? null,
     data.cover_image ?? null, data.logo ?? null, data.brand_name ?? null,
     data.primary_cta ?? null, data.result_cta ?? null, data.whatsapp_cta ?? null,
-    data.status || 'draft', data.slug
+    data.status || 'draft', data.slug,
+    data.template || 'default',
+    data.hero_image ?? null,
+    data.hero_image_size || 'md',
+    data.text_scale || 'md',
+    data.accent_color ?? null,
+    data.about_me_title ?? null,
+    data.about_me_text ?? null,
+    data.about_me_image ?? null,
+    data.about_me_image_size || 'md',
+    data.sections ?? null
   ).run();
   return res.meta.last_row_id;
 }
 async function quiz_update(env, id, data) {
   await env.DB.prepare(
-    `UPDATE quizzes SET title=?, subtitle=?, description=?, instructions=?, cover_image=?, logo=?, brand_name=?, primary_cta=?, result_cta=?, whatsapp_cta=?, status=?, slug=?, updated_at=datetime('now') WHERE id=?`
+    `UPDATE quizzes SET
+       title=?, subtitle=?, description=?, instructions=?,
+       cover_image=?, logo=?, brand_name=?, primary_cta=?, result_cta=?, whatsapp_cta=?,
+       status=?, slug=?, template=?, hero_image=?, hero_image_size=?, text_scale=?,
+       accent_color=?, about_me_title=?, about_me_text=?, about_me_image=?, about_me_image_size=?,
+       sections=?, updated_at=datetime('now')
+     WHERE id=?`
   ).bind(
     data.title, data.subtitle ?? null, data.description ?? null, data.instructions ?? null,
     data.cover_image ?? null, data.logo ?? null, data.brand_name ?? null,
     data.primary_cta ?? null, data.result_cta ?? null, data.whatsapp_cta ?? null,
-    data.status || 'draft', data.slug, id
+    data.status || 'draft', data.slug,
+    data.template || 'default',
+    data.hero_image ?? null,
+    data.hero_image_size || 'md',
+    data.text_scale || 'md',
+    data.accent_color ?? null,
+    data.about_me_title ?? null,
+    data.about_me_text ?? null,
+    data.about_me_image ?? null,
+    data.about_me_image_size || 'md',
+    data.sections ?? null,
+    id
   ).run();
 }
 async function quiz_delete(env, id) {
