@@ -1998,7 +1998,7 @@ function viewAdminQuizForm(quiz, isEdit, csrf, currentUser, appUrl) {
       async load(){
         const data = await apiFetch('/api/admin/quizzes/' + this.quizId + '/questions');
         this.questions = data.questions;
-        this.\\$nextTick(() => this.initSortable());
+        setTimeout(() => this.initSortable(), 50);
       },
       initSortable(){
         const el = document.getElementById('sortable-questions');
