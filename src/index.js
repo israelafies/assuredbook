@@ -164,7 +164,6 @@ async function sanitizeHtml(dirty) {
   return await res.text();
 }
 
-// Converts the old block-array JSON to plain HTML so nothing is lost on migration.
 function legacyBlocksToHtml(rawSections) {
   if (!rawSections) return '';
   let blocks;
@@ -192,7 +191,6 @@ function legacyBlocksToHtml(rawSections) {
   return parts.join('\n\n');
 }
 
-// Turns {button} into the real quiz CTA. Runs after sanitization on the public page.
 function renderLandingContent(html, quiz) {
   if (!html) return '';
   const btnHtml = `<div class="my-6 text-center"><button type="button" @click="stage = 'lead'" class="inline-flex items-center rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-7 py-4 text-lg shadow-lg hover:scale-105 transition">${escapeHtml(quiz.primary_cta || 'Start the quiz')}</button></div>`;
@@ -346,9 +344,117 @@ function freshSession() {
 }
 
 // ---------------------------------------------------------------------------
+// Category-result defaults + resolution
+// ---------------------------------------------------------------------------
+const RELATIONSHIP_CATEGORIES = ['fear_filling_gaps', 'reassurance_loop', 'past_hurt', 'current_concerns'];
+
+function defaultResultContent() {
+  return {
+    categories: {
+      fear_filling_gaps: {
+        label: 'Fear Filling the Gaps',
+        headline: 'Fear Fills in the Gaps',
+        explanation: 'When uncertainty or missing information leads you to imagine negative explanations for your partner\'s behaviour, fear can quietly fill in the blanks before the facts arrive. It\'s a common way the mind tries to protect itself — but it can turn small silences into large worries.',
+        next_step: 'Next time you notice yourself filling a gap with a worry, pause and write down what you actually know versus what you\'re imagining. Then find one calm moment to ask your partner an open question instead of assuming an answer.',
+      },
+      reassurance_loop: {
+        label: 'The Reassurance Loop',
+        headline: 'The Reassurance Loop',
+        explanation: 'When you seek reassurance to relieve relationship anxiety, the relief often doesn\'t last. The mind registers comfort for a moment, then searches for the next thing to worry about. That pattern is exhausting — for both of you — and it rarely resolves the underlying worry.',
+        next_step: 'Notice when the urge to seek reassurance is strongest. Before asking, take three slow breaths and rate your anxiety from 1 to 10. If you still want to ask, ask once, then sit with the feeling rather than asking again. Over time this builds tolerance for uncertainty.',
+      },
+      past_hurt: {
+        label: 'When Past Hurt Enters the Present',
+        headline: 'When Past Hurt Enters the Present',
+        explanation: 'Previous betrayal or painful relationship experiences can shape how you interpret what\'s happening now. The mind, having learned that certain signals preceded pain, stays alert for those signals even when today\'s situation is different. This isn\'t a flaw — it\'s memory doing its job too well.',
+        next_step: 'Gently separate what\'s happening now from what happened before. When a strong reaction shows up, ask yourself: "Is this about today, or is this an echo?" If it\'s an echo, name it to yourself and consider sharing it with your partner in a calm moment.',
+      },
+      current_concerns: {
+        label: 'Recurring Concerns Deserve a Clear Look',
+        headline: 'Recurring Concerns Deserve a Clear Look',
+        explanation: 'Sometimes the worry isn\'t about the past or a habit of seeking reassurance — it\'s about something specific and repeated in the present. That deserves a calm, direct look rather than being dismissed or spiralling. Not every concern is a red flag, but not every concern should be silenced either.',
+        next_step: 'Write down the specific observation, without interpretation. Then set aside a neutral time to raise it with your partner — using "I noticed..." rather than "You always...". Ask for their perspective. The goal is information, not a verdict.',
+      },
+    },
+    tie: {
+      headline: 'Two Patterns Are Interacting',
+      explanation: 'Your answers show two relationship patterns running side by side. When two patterns interact they can amplify each other — the worry feeds the reassurance-seeking, or an old hurt makes a present concern feel sharper. Recognising the interaction is often the first useful step.',
+      next_step: 'Choose one of the two patterns to focus on first — usually the one that feels more active right now. Work on the next step for that pattern for two weeks before turning your attention to the other. Trying to fix both at once rarely works.',
+    },
+    fallback: {
+      headline: 'Your Result',
+      explanation: 'Thank you for completing the quiz. Your answers didn\'t strongly point to a single pattern, which can itself be worth noticing — it may mean your current experience doesn\'t fit neatly into one category.',
+      next_step: 'If something brought you here, take a quiet moment to write down what it was. Naming it clearly, even privately, is often more useful than trying to categorise it.',
+    },
+    overrides: {},
+  };
+}
+
+function parseResultContent(raw) {
+  const defaults = defaultResultContent();
+  if (!raw) return defaults;
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { return defaults; }
+  if (!parsed || typeof parsed !== 'object') return defaults;
+  const cats = parsed.categories && typeof parsed.categories === 'object' ? parsed.categories : {};
+  const out = { categories: {}, tie: { ...defaults.tie }, fallback: { ...defaults.fallback }, overrides: {} };
+  for (const k of RELATIONSHIP_CATEGORIES) {
+    const c = cats[k] && typeof cats[k] === 'object' ? cats[k] : {};
+    out.categories[k] = { ...defaults.categories[k], ...c };
+  }
+  if (parsed.tie && typeof parsed.tie === 'object') out.tie = { ...defaults.tie, ...parsed.tie };
+  if (parsed.fallback && typeof parsed.fallback === 'object') out.fallback = { ...defaults.fallback, ...parsed.fallback };
+  if (parsed.overrides && typeof parsed.overrides === 'object') out.overrides = parsed.overrides;
+  return out;
+}
+
+function resolveCategoryContent(resultContent, categoryScores) {
+  const entries = Object.entries(categoryScores || {}).filter(([, v]) => typeof v === 'number' && v > 0);
+  if (entries.length === 0) {
+    return { kind: 'fallback', content: resultContent.fallback, categories: [] };
+  }
+  const maxScore = Math.max(...entries.map(([, v]) => v));
+  const winners = entries.filter(([, v]) => v === maxScore).map(([k]) => k).sort();
+
+  if (winners.length === 1) {
+    const key = winners[0];
+    const content = resultContent.categories[key] || resultContent.fallback;
+    return { kind: 'single', content, categories: [key] };
+  }
+
+  const overrideKey = winners.join('+');
+  if (resultContent.overrides && resultContent.overrides[overrideKey]) {
+    const o = resultContent.overrides[overrideKey];
+    return {
+      kind: 'tie',
+      content: {
+        headline: o.headline || resultContent.tie.headline,
+        explanation: o.explanation || resultContent.tie.explanation,
+        next_step: o.next_step || resultContent.tie.next_step,
+      },
+      categories: winners,
+    };
+  }
+
+  const headlines = winners.map(k => resultContent.categories[k]?.headline).filter(Boolean);
+  const explanations = winners.map(k => resultContent.categories[k]?.explanation).filter(Boolean);
+  const nextSteps = winners.map(k => resultContent.categories[k]?.next_step).filter(Boolean);
+  const combinedHeadline = (resultContent.tie.headline || 'Two Patterns Are Interacting')
+    .replace(/\{categories\}/g, headlines.join(' and '));
+  const combinedExplanation = (resultContent.tie.explanation || '') +
+    (explanations.length ? '\n\n' + explanations.join('\n\n') : '');
+  const combinedNext = (resultContent.tie.next_step || '') +
+    (nextSteps.length ? ' ' + nextSteps.join(' ') : '');
+  return {
+    kind: 'tie',
+    content: { headline: combinedHeadline, explanation: combinedExplanation, next_step: combinedNext },
+    categories: winners,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // D1 model layer
 // ---------------------------------------------------------------------------
-// -- users --
 async function user_find_by_id(env, id) {
   return env.DB.prepare('SELECT id, name, email, is_admin FROM users WHERE id = ?').bind(id).first();
 }
@@ -367,7 +473,6 @@ async function user_count(env) {
   return row ? row.c : 0;
 }
 
-// -- quizzes --
 async function quiz_find(env, id) {
   return env.DB.prepare('SELECT * FROM quizzes WHERE id = ?').bind(id).first();
 }
@@ -394,8 +499,8 @@ async function quiz_create(env, data) {
        cover_image, logo, brand_name, primary_cta, result_cta, whatsapp_cta,
        status, slug, template, hero_image, hero_image_size, text_scale,
        accent_color, about_me_title, about_me_text, about_me_image, about_me_image_size,
-       sections, landing_content
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       sections, landing_content, result_content
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(
     uuid4(),
     data.title, data.subtitle ?? null, data.description ?? null, data.instructions ?? null,
@@ -412,7 +517,8 @@ async function quiz_create(env, data) {
     data.about_me_image ?? null,
     data.about_me_image_size || 'md',
     null,
-    data.landing_content ?? null
+    data.landing_content ?? null,
+    data.result_content ?? null
   ).run();
   return res.meta.last_row_id;
 }
@@ -423,7 +529,7 @@ async function quiz_update(env, id, data) {
        cover_image=?, logo=?, brand_name=?, primary_cta=?, result_cta=?, whatsapp_cta=?,
        status=?, slug=?, template=?, hero_image=?, hero_image_size=?, text_scale=?,
        accent_color=?, about_me_title=?, about_me_text=?, about_me_image=?, about_me_image_size=?,
-       sections=NULL, landing_content=?, updated_at=datetime('now')
+       sections=NULL, landing_content=?, result_content=?, updated_at=datetime('now')
      WHERE id=?`
   ).bind(
     data.title, data.subtitle ?? null, data.description ?? null, data.instructions ?? null,
@@ -440,6 +546,7 @@ async function quiz_update(env, id, data) {
     data.about_me_image ?? null,
     data.about_me_image_size || 'md',
     data.landing_content ?? null,
+    data.result_content ?? null,
     id
   ).run();
 }
@@ -465,6 +572,8 @@ async function quiz_duplicate(env, id) {
     cover_image: quiz.cover_image, logo: quiz.logo, brand_name: quiz.brand_name,
     primary_cta: quiz.primary_cta, result_cta: quiz.result_cta, whatsapp_cta: quiz.whatsapp_cta,
     status: 'draft', slug: newSlug,
+    template: quiz.template, hero_image: quiz.hero_image, hero_image_size: quiz.hero_image_size,
+    text_scale: quiz.text_scale, landing_content: quiz.landing_content, result_content: quiz.result_content,
   });
   const questions = await question_all_for_quiz(env, id, false);
   for (const q of questions) {
@@ -527,7 +636,6 @@ async function quiz_completions_last_7_days(env) {
   return out;
 }
 
-// -- questions --
 async function question_all_for_quiz(env, quizId, activeOnly = true) {
   let sql = 'SELECT * FROM questions WHERE quiz_id = ?';
   if (activeOnly) sql += ' AND is_active = 1';
@@ -576,7 +684,6 @@ async function question_reorder(env, quizId, orderedIds) {
   }
 }
 
-// -- options --
 async function option_all_for_question(env, questionId) {
   const res = await env.DB.prepare('SELECT * FROM answer_options WHERE question_id = ? ORDER BY "order" ASC').bind(questionId).all();
   const rows = res.results || [];
@@ -627,7 +734,6 @@ async function option_next_order(env, questionId) {
   return (row && row.m ? row.m : 0) + 1;
 }
 
-// -- result profiles --
 async function result_profile_all_for_quiz(env, quizId) {
   const res = await env.DB.prepare('SELECT * FROM result_profiles WHERE quiz_id = ? AND is_active = 1').bind(quizId).all();
   const rows = res.results || [];
@@ -660,7 +766,6 @@ async function result_profile_create(env, data) {
   return res.meta.last_row_id;
 }
 
-// -- leads --
 async function lead_find(env, id) {
   return env.DB.prepare('SELECT * FROM leads WHERE id = ?').bind(id).first();
 }
@@ -687,7 +792,6 @@ async function lead_update(env, id, data) {
   ).bind(data.first_name ?? null, data.email ?? null, data.phone ?? null, id).run();
 }
 
-// -- attempts --
 async function attempt_find_by_attempt_id(env, attemptId) {
   const row = await env.DB.prepare('SELECT * FROM quiz_attempts WHERE attempt_id = ?').bind(attemptId).first();
   if (row) {
@@ -738,7 +842,6 @@ async function attempt_mark_completed(env, attemptId, score, category, resultPro
   ).bind(score, category, resultProfileId, attemptId).run();
 }
 
-// -- events --
 async function event_log(env, type, quizId, attemptId) {
   await env.DB.prepare('INSERT INTO events (quiz_id, event_type, attempt_id) VALUES (?, ?, ?)')
     .bind(quizId ?? null, type, attemptId ?? null).run();
@@ -747,7 +850,6 @@ async function share_event_create(env, attemptId, platform) {
   await env.DB.prepare('INSERT INTO share_events (attempt_id, platform) VALUES (?, ?)').bind(attemptId, platform).run();
 }
 
-// -- settings --
 async function setting_get(env, key, fallback = '') {
   const row = await env.DB.prepare('SELECT value FROM settings WHERE "key" = ?').bind(key).first();
   return row && row.value != null ? row.value : fallback;
@@ -759,7 +861,6 @@ async function setting_set(env, key, value) {
   ).bind(key, value).run();
 }
 
-// -- webhooks --
 async function webhook_all(env) {
   const res = await env.DB.prepare('SELECT * FROM webhooks ORDER BY created_at DESC').all();
   const rows = res.results || [];
@@ -799,7 +900,7 @@ async function webhook_dispatch_event(env, event, payload) {
 }
 
 // ---------------------------------------------------------------------------
-// Security helpers (SSRF, IP, rate limit)
+// Security helpers
 // ---------------------------------------------------------------------------
 function isPrivateIp(ip) {
   if (!ip || typeof ip !== 'string') return true;
@@ -818,7 +919,6 @@ function isPrivateIp(ip) {
     if (a >= 224) return true;
     return false;
   }
-  // IPv6 checks
   const lower = ip.toLowerCase();
   if (lower === '::1' || lower === '::' || lower.startsWith('::ffff:')) return true;
   if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
@@ -828,8 +928,6 @@ function isPrivateIp(ip) {
 }
 
 async function resolveHostViaDoh(host) {
-  // Use Cloudflare's DoH endpoint (JSON API). We intentionally prefer CF's own
-  // resolver because it is operated by the same provider as the Worker.
   const url = `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=A`;
   try {
     const r = await fetch(url, { headers: { 'accept': 'application/dns-json' } });
@@ -844,12 +942,8 @@ async function is_url_safe_for_webhook(url) {
   let parsed;
   try { parsed = new URL(url); }
   catch { return { ok: false, reason: 'Invalid URL.' }; }
-  if (parsed.protocol !== 'https:') {
-    return { ok: false, reason: 'Webhook URL must use https://' };
-  }
-  if (parsed.port && parsed.port !== '443') {
-    return { ok: false, reason: 'Webhook URL must use port 443.' };
-  }
+  if (parsed.protocol !== 'https:') return { ok: false, reason: 'Webhook URL must use https://' };
+  if (parsed.port && parsed.port !== '443') return { ok: false, reason: 'Webhook URL must use port 443.' };
   const host = parsed.hostname.toLowerCase();
   if (!host) return { ok: false, reason: 'Missing hostname.' };
   if (host === 'localhost' || host.endsWith('.localhost') ||
@@ -862,13 +956,9 @@ async function is_url_safe_for_webhook(url) {
     return { ok: true };
   }
   const ips = await resolveHostViaDoh(host);
-  if (!ips || ips.length === 0) {
-    return { ok: false, reason: 'Hostname could not be resolved.' };
-  }
+  if (!ips || ips.length === 0) return { ok: false, reason: 'Hostname could not be resolved.' };
   for (const ip of ips) {
-    if (isPrivateIp(ip)) {
-      return { ok: false, reason: 'Hostname resolves to a private address.' };
-    }
+    if (isPrivateIp(ip)) return { ok: false, reason: 'Hostname resolves to a private address.' };
   }
   return { ok: true };
 }
@@ -885,7 +975,7 @@ async function ip_lead_rate_limited(env, ip, max = 8, seconds = 60) {
 }
 
 // ---------------------------------------------------------------------------
-// Services (scoring + lead capture)
+// Scoring + lead capture
 // ---------------------------------------------------------------------------
 function scoring_find_option(options, id) {
   for (const o of options) {
@@ -984,7 +1074,7 @@ async function lead_capture_start(env, quiz, data) {
 }
 
 // ---------------------------------------------------------------------------
-// Auth middleware
+// Auth
 // ---------------------------------------------------------------------------
 async function current_user(request, env, session) {
   if (!session || !session.userId) return null;
@@ -996,7 +1086,7 @@ async function is_admin(request, env, session) {
 }
 
 // ---------------------------------------------------------------------------
-// Routing
+// Router
 // ---------------------------------------------------------------------------
 function matchRoute(method, pathname, routes) {
   for (const [m, pattern, handler] of routes) {
@@ -1018,7 +1108,7 @@ function matchRoute(method, pathname, routes) {
 }
 
 // ---------------------------------------------------------------------------
-// View: shared page layout
+// Layout
 // ---------------------------------------------------------------------------
 function adminNav(currentUser, csrf) {
   if (!currentUser) return '';
@@ -1149,11 +1239,8 @@ function viewQuizLanding(quiz, csrf) {
       ? `<p class="text-sm font-bold uppercase tracking-widest ${theme.badgeText} mb-4">${e(quiz.brand_name)}</p>`
       : '';
 
-  // Prefer the new landing_content. Fall back to legacy blocks (migrated on the fly).
   let contentRaw = quiz.landing_content || '';
-  if (!contentRaw && quiz.sections) {
-    contentRaw = legacyBlocksToHtml(quiz.sections);
-  }
+  if (!contentRaw && quiz.sections) contentRaw = legacyBlocksToHtml(quiz.sections);
   const contentHtml = renderLandingContent(contentRaw, quiz);
 
   const instructionsBlock = quiz.instructions ? `
@@ -1364,17 +1451,21 @@ function quizFunnel(slug){
   });
 }
 
-function viewQuizResult({ attempt, lead, profile, whatsappNumber, resultUrl, isOwner, csrf }) {
-  const title = profile && profile.title ? profile.title : 'Your result';
-  const description = profile && profile.description ? profile.description : '';
-  const recommendations = profile && profile.recommendations ? profile.recommendations : '';
-  const ctaText = profile && profile.cta_text ? profile.cta_text : 'Send My Result to WhatsApp';
+function viewQuizResult({ attempt, lead, quiz, resolved, whatsappNumber, resultUrl, csrf }) {
+  const content = resolved.content || {};
+  const headline = content.headline || 'Your Result';
+  const explanation = content.explanation || '';
+  const nextStep = content.next_step || '';
+  const ctaText = quiz.result_cta || 'Send My Result to WhatsApp';
 
   let whatsappMessage;
-  if (profile && profile.whatsapp_message) {
-    whatsappMessage = String(profile.whatsapp_message).replace(/\{RESULT_LINK\}/g, resultUrl);
+  if (quiz._result_whatsapp_message) {
+    whatsappMessage = String(quiz._result_whatsapp_message)
+      .replace(/\{RESULT_LINK\}/g, resultUrl)
+      .replace(/\{RESULT_HEADLINE\}/g, headline)
+      .replace(/\{RESULT_CATEGORY\}/g, headline);
   } else {
-    whatsappMessage = 'Here is my result: ' + resultUrl;
+    whatsappMessage = 'Hi, I just completed the relationship quiz. My result was: ' + headline + '. I\'d like to learn more about what this means and what I can do next. ' + resultUrl;
   }
 
   const whatsappLink = whatsappNumber
@@ -1387,16 +1478,21 @@ function viewQuizResult({ attempt, lead, profile, whatsappNumber, resultUrl, isO
     <div class="relative max-w-2xl mx-auto text-center animate-fade-in-up">
       <div class="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-white/10 border border-white/20 text-3xl">✓</div>
       <p class="mt-6 text-sm font-bold uppercase tracking-widest text-indigo-300">Your result is ready</p>
-      <h1 class="mt-2 text-3xl sm:text-4xl font-black leading-tight">${e(title)}</h1>
-      ${description ? `<p class="mt-4 text-slate-300 leading-relaxed whitespace-pre-line">${e(description)}</p>` : ''}
+      <h1 class="mt-2 text-3xl sm:text-4xl font-black leading-tight">${e(headline)}</h1>
     </div>
   </section>
 
   <section class="max-w-2xl mx-auto px-4 mt-8 sm:-mt-10 pb-16 space-y-5">
-    ${recommendations ? `
+    ${explanation ? `
     <div class="bg-white rounded-2xl border p-5 sm:p-6">
-      <p class="font-bold text-slate-950 flex items-center gap-2"><span>📋</span> Recommended next steps</p>
-      <p class="mt-3 text-slate-600 leading-relaxed whitespace-pre-line">${e(recommendations)}</p>
+      <p class="font-bold text-slate-950 flex items-center gap-2"><span>🧠</span> What this means</p>
+      <p class="mt-3 text-slate-600 leading-relaxed whitespace-pre-line">${e(explanation)}</p>
+    </div>` : ''}
+
+    ${nextStep ? `
+    <div class="bg-white rounded-2xl border p-5 sm:p-6">
+      <p class="font-bold text-slate-950 flex items-center gap-2"><span>🎯</span> Your next step</p>
+      <p class="mt-3 text-slate-600 leading-relaxed whitespace-pre-line">${e(nextStep)}</p>
     </div>` : ''}
 
     <div class="bg-white rounded-2xl border p-5 sm:p-6">
@@ -1418,6 +1514,7 @@ function viewQuizResult({ attempt, lead, profile, whatsappNumber, resultUrl, isO
     </div>
 
     <p class="text-center text-xs text-slate-400">Assessment ID: ${e(attempt.attempt_id)}</p>
+    <p class="text-center text-xs text-slate-400">This quiz is not a clinical diagnosis and cannot determine whether a partner is cheating. If you are in distress, please reach out to a qualified professional.</p>
   </section>
 </div>
 
@@ -1441,7 +1538,7 @@ function share(platform){
 }
 </script>`;
 
-  return pageLayout({ title, description, csrf, body });
+  return pageLayout({ title: headline, description: explanation.slice(0, 160), csrf, body });
 }
 
 // ---------------------------------------------------------------------------
@@ -1648,6 +1745,27 @@ function viewAdminQuizForm(quiz, isEdit, csrf, currentUser, appUrl) {
     `<option value="${v}" ${current === v ? 'selected' : ''}>${l}</option>`).join('');
   const slugPreviewBase = String(appUrl || '').replace(/\/+$/, '');
 
+  const rc = parseResultContent(q.result_content);
+
+  const catBlock = (key, label) => {
+    const c = rc.categories[key] || {};
+    return `
+    <div class="rounded-xl border border-slate-200 p-4 space-y-3 bg-slate-50/50">
+      <div class="flex items-center justify-between gap-2">
+        <h4 class="font-semibold text-slate-900">${e(label)}</h4>
+        <code class="text-xs bg-white px-2 py-1 rounded border border-slate-200">${e(key)}</code>
+      </div>
+      <div><label class="block text-xs font-medium text-slate-700">Display label</label>
+        <input name="rc_${key}_label" value="${e(c.label || '')}" class="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm"></div>
+      <div><label class="block text-xs font-medium text-slate-700">Headline</label>
+        <input name="rc_${key}_headline" value="${e(c.headline || '')}" class="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm"></div>
+      <div><label class="block text-xs font-medium text-slate-700">Explanation</label>
+        <textarea name="rc_${key}_explanation" rows="4" class="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm">${e(c.explanation || '')}</textarea></div>
+      <div><label class="block text-xs font-medium text-slate-700">Practical next step</label>
+        <textarea name="rc_${key}_next_step" rows="3" class="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm">${e(c.next_step || '')}</textarea></div>
+    </div>`;
+  };
+
   const body = `
 <main class="max-w-4xl mx-auto px-4 sm:px-6 py-8 space-y-6">
   <div class="flex items-center justify-between">
@@ -1713,18 +1831,53 @@ function viewAdminQuizForm(quiz, isEdit, csrf, currentUser, appUrl) {
     </fieldset>
 
     <fieldset class="space-y-4 pt-6 border-t border-slate-200">
-      <legend class="font-semibold text-slate-900 mb-2">Result page content</legend>
-      <p class="text-xs text-slate-500 -mt-2">Everything shown after the visitor completes the quiz. Use <code class="bg-slate-100 px-1 rounded">{RESULT_LINK}</code> in the WhatsApp message to insert their result URL.</p>
+      <legend class="font-semibold text-slate-900 mb-2">Category-based result content</legend>
+      <p class="text-xs text-slate-500 -mt-2">This content is shown on the result page based on which category scores highest from the participant's answers. Configure the answer weights in the question editor below (each option has a <code>Category Weights</code> JSON field).</p>
+
+      ${catBlock('fear_filling_gaps', 'Fear Filling the Gaps')}
+      ${catBlock('reassurance_loop', 'The Reassurance Loop')}
+      ${catBlock('past_hurt', 'When Past Hurt Enters the Present')}
+      ${catBlock('current_concerns', 'Recurring Concerns Deserve a Clear Look')}
+
+      <div class="rounded-xl border border-slate-200 p-4 space-y-3 bg-indigo-50/40">
+        <h4 class="font-semibold text-slate-900">Combined result (when two or more categories tie)</h4>
+        <div><label class="block text-xs font-medium text-slate-700">Headline (use <code>{categories}</code> to insert the tied category names)</label>
+          <input name="rc_tie_headline" value="${e(rc.tie.headline || '')}" class="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm"></div>
+        <div><label class="block text-xs font-medium text-slate-700">Explanation</label>
+          <textarea name="rc_tie_explanation" rows="4" class="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm">${e(rc.tie.explanation || '')}</textarea></div>
+        <div><label class="block text-xs font-medium text-slate-700">Practical next step</label>
+          <textarea name="rc_tie_next_step" rows="3" class="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm">${e(rc.tie.next_step || '')}</textarea></div>
+        <details class="mt-2">
+          <summary class="text-xs text-slate-600 cursor-pointer select-none">Advanced: per-combination overrides (JSON)</summary>
+          <p class="mt-2 text-xs text-slate-500">Optional. Key by joined category keys with <code>+</code> between them, sorted alphabetically. Example: <code>{"fear_filling_gaps+reassurance_loop": {"headline":"...","explanation":"...","next_step":"..."}}</code></p>
+          <textarea name="rc_overrides_json" rows="5" placeholder='{"fear_filling_gaps+reassurance_loop":{"headline":"","explanation":"","next_step":""}}' class="mt-2 w-full rounded-lg border border-slate-300 p-2 text-xs font-mono">${e(Object.keys(rc.overrides || {}).length ? JSON.stringify(rc.overrides, null, 2) : '')}</textarea>
+        </details>
+      </div>
+
+      <div class="rounded-xl border border-slate-200 p-4 space-y-3 bg-slate-50">
+        <h4 class="font-semibold text-slate-900">Fallback result (no category scored above zero)</h4>
+        <div><label class="block text-xs font-medium text-slate-700">Headline</label>
+          <input name="rc_fallback_headline" value="${e(rc.fallback.headline || '')}" class="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm"></div>
+        <div><label class="block text-xs font-medium text-slate-700">Explanation</label>
+          <textarea name="rc_fallback_explanation" rows="3" class="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm">${e(rc.fallback.explanation || '')}</textarea></div>
+        <div><label class="block text-xs font-medium text-slate-700">Practical next step</label>
+          <textarea name="rc_fallback_next_step" rows="3" class="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm">${e(rc.fallback.next_step || '')}</textarea></div>
+      </div>
+    </fieldset>
+
+    <fieldset class="space-y-4 pt-6 border-t border-slate-200">
+      <legend class="font-semibold text-slate-900 mb-2">Legacy result page content (used as fallback for old attempts)</legend>
+      <p class="text-xs text-slate-500 -mt-2">Kept for backward compatibility. New results use the category content above. Tokens you can use in the WhatsApp message: <code>{RESULT_LINK}</code>, <code>{RESULT_HEADLINE}</code>, <code>{RESULT_CATEGORY}</code>.</p>
       <div><label class="block text-sm font-medium text-slate-700">Result page title</label>
         <input name="result_title" value="${e(q._result_title || '')}" placeholder="Your Report Is Ready" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-sm"></div>
       <div><label class="block text-sm font-medium text-slate-700">Result page description</label>
         <textarea name="result_description" rows="3" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-sm">${e(q._result_description || '')}</textarea></div>
       <div><label class="block text-sm font-medium text-slate-700">Recommendations (multi-line)</label>
-        <textarea name="result_recommendations" rows="6" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-sm">${e(q._result_recommendations || '')}</textarea></div>
+        <textarea name="result_recommendations" rows="5" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-sm">${e(q._result_recommendations || '')}</textarea></div>
       <div><label class="block text-sm font-medium text-slate-700">CTA text (heading above the WhatsApp button)</label>
         <input name="result_cta_text" value="${e(q._result_cta_text || '')}" placeholder="Send My Result to WhatsApp" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-sm"></div>
       <div><label class="block text-sm font-medium text-slate-700">WhatsApp message template</label>
-        <textarea name="result_whatsapp_message" rows="3" placeholder="I just completed the quiz. Here is my result: {RESULT_LINK}" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-sm">${e(q._result_whatsapp_message || '')}</textarea></div>
+        <textarea name="result_whatsapp_message" rows="3" placeholder="Hi, I just completed the relationship quiz. My result was: {RESULT_HEADLINE}. Here is my result: {RESULT_LINK}" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-sm">${e(q._result_whatsapp_message || '')}</textarea></div>
     </fieldset>
 
     <fieldset class="space-y-4 pt-6 border-t border-slate-200">
@@ -1753,6 +1906,7 @@ function viewAdminQuizForm(quiz, isEdit, csrf, currentUser, appUrl) {
   ${isEdit ? `
   <div x-data="questionBuilder(${q.id})" x-init="load()">
     <h3 class="text-lg font-bold text-slate-950 mb-3">Questions</h3>
+    <p class="text-xs text-slate-500 mb-3">Category weights are configured per option. Use the option editor's <strong>Category Weights</strong> field with JSON like <code>{"fear_filling_gaps":3,"reassurance_loop":1}</code>.</p>
     <div class="bg-white rounded-2xl border p-5 sm:p-6 space-y-4">
       <button @click="addQuestion()" class="inline-flex items-center rounded-lg bg-emerald-600 text-white px-4 py-2.5 text-sm font-semibold hover:bg-emerald-700 transition">Add Question</button>
       <div id="sortable-questions" class="space-y-2">
@@ -1773,6 +1927,7 @@ function viewAdminQuizForm(quiz, isEdit, csrf, currentUser, appUrl) {
                 <div class="flex items-center gap-2 text-sm flex-wrap">
                   <span x-text="opt.option_text"></span>
                   <span class="text-xs text-slate-400" x-text="'(score: ' + opt.score_value + ')'"></span>
+                  <span class="text-xs text-indigo-400" x-text="(opt.category_weights && Object.keys(opt.category_weights).length) ? '(cat: ' + JSON.stringify(opt.category_weights) + ')' : ''"></span>
                   <button @click="editOption(q, opt)" class="text-indigo-500 text-xs hover:underline">edit</button>
                   <button @click="deleteOption(q, opt)" class="text-red-400 text-xs hover:underline">del</button>
                 </div>
@@ -1815,10 +1970,13 @@ function viewAdminQuizForm(quiz, isEdit, csrf, currentUser, appUrl) {
         <h3 class="text-lg font-semibold">Edit Option</h3>
         <div class="mt-4"><label class="block text-sm font-medium text-slate-700">Option Text</label>
           <input x-model="optionModal.form.option_text" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-sm"></div>
-        <div class="mt-3"><label class="block text-sm font-medium text-slate-700">Score Value</label>
+        <div class="mt-3"><label class="block text-sm font-medium text-slate-700">Score Value (legacy)</label>
           <input type="number" x-model="optionModal.form.score_value" class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-sm"></div>
-        <div class="mt-3"><label class="block text-sm font-medium text-slate-700">Category Weights (JSON)</label>
-          <input x-model="optionModal.form.category_weights_json" placeholder='{"category":5}' class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-sm"></div>
+        <div class="mt-3">
+          <label class="block text-sm font-medium text-slate-700">Category Weights (JSON)</label>
+          <p class="text-xs text-slate-500 mt-0.5">Available keys: <code>fear_filling_gaps</code>, <code>reassurance_loop</code>, <code>past_hurt</code>, <code>current_concerns</code>.</p>
+          <input x-model="optionModal.form.category_weights_json" placeholder='{"fear_filling_gaps":3,"reassurance_loop":1}' class="mt-1 w-full rounded-lg border border-slate-300 p-2.5 text-sm font-mono">
+        </div>
         <p x-show="optionModal.error" x-text="optionModal.error" class="mt-2 text-xs text-red-600"></p>
         <div class="mt-5 flex justify-end gap-2">
           <button @click="saveOption()" class="rounded-lg bg-indigo-600 text-white px-4 py-2 text-sm font-semibold">Save</button>
@@ -2209,13 +2367,71 @@ async function handleQuizResult(request, env, ctx, params) {
     return htmlResponse(view404(env, ctx.session.csrf, await current_user(request, env, ctx.session)), 404);
   }
   const lead = await lead_find(env, attempt.lead_id);
-  const profile = attempt.result_profile_id ? await result_profile_find(env, attempt.result_profile_id) : null;
+  const quiz = await quiz_find(env, attempt.quiz_id) || {};
+  const resultContent = parseResultContent(quiz.result_content);
+  const savedKey = (attempt.result_category || '').trim();
+
+  // Build the profile-based legacy view (for older attempts that predate category scoring)
+  const legacyProfile = attempt.result_profile_id ? await result_profile_find(env, attempt.result_profile_id) : null;
+  if (legacyProfile) {
+    quiz._result_title = legacyProfile.title || '';
+    quiz._result_description = legacyProfile.description || '';
+    quiz._result_recommendations = legacyProfile.recommendations || '';
+    quiz._result_cta_text = legacyProfile.cta_text || '';
+    quiz._result_whatsapp_message = legacyProfile.whatsapp_message || '';
+  }
+
+  let resolved;
+  if (savedKey) {
+    const keys = savedKey.split('+').filter(Boolean).sort();
+    if (keys.length === 1) {
+      const content = resultContent.categories[keys[0]] || resultContent.fallback;
+      resolved = { kind: 'single', content, categories: keys };
+    } else {
+      const overrideKey = keys.join('+');
+      if (resultContent.overrides && resultContent.overrides[overrideKey]) {
+        const o = resultContent.overrides[overrideKey];
+        resolved = {
+          kind: 'tie',
+          content: {
+            headline: o.headline || resultContent.tie.headline,
+            explanation: o.explanation || resultContent.tie.explanation,
+            next_step: o.next_step || resultContent.tie.next_step,
+          },
+          categories: keys,
+        };
+      } else {
+        const headlines = keys.map(k => resultContent.categories[k]?.headline).filter(Boolean);
+        const explanations = keys.map(k => resultContent.categories[k]?.explanation).filter(Boolean);
+        const nextSteps = keys.map(k => resultContent.categories[k]?.next_step).filter(Boolean);
+        resolved = {
+          kind: 'tie',
+          content: {
+            headline: (resultContent.tie.headline || 'Two Patterns Are Interacting').replace(/\{categories\}/g, headlines.join(' and ')),
+            explanation: (resultContent.tie.explanation || '') + (explanations.length ? '\n\n' + explanations.join('\n\n') : ''),
+            next_step: (resultContent.tie.next_step || '') + (nextSteps.length ? ' ' + nextSteps.join(' ') : ''),
+          },
+          categories: keys,
+        };
+      }
+    }
+  } else if (legacyProfile) {
+    resolved = {
+      kind: 'profile',
+      content: {
+        headline: legacyProfile.title || 'Your Result',
+        explanation: legacyProfile.description || '',
+        next_step: legacyProfile.recommendations || '',
+      },
+      categories: [],
+    };
+  } else {
+    resolved = { kind: 'fallback', content: resultContent.fallback, categories: [] };
+  }
+
   const whatsappNumber = await setting_get(env, 'whatsapp_number', '');
   const resultUrl = (env.APP_URL || '') + '/result/' + attempt.attempt_id;
-  const isOwner = ctx.session.resultOwners && ctx.session.resultOwners[attempt.attempt_id];
-  return htmlResponse(viewQuizResult({
-    attempt, lead, profile, whatsappNumber, resultUrl, isOwner, csrf: ctx.session.csrf,
-  }));
+  return htmlResponse(viewQuizResult({ attempt, lead, quiz, resolved, whatsappNumber, resultUrl, csrf: ctx.session.csrf }));
 }
 
 async function handleLead(request, env, ctx, params) {
@@ -2291,18 +2507,30 @@ async function handleSubmit(request, env, ctx, params) {
   if (attempt.completion_status === 'completed') {
     return jsonResponse({ result_url: (env.APP_URL || '') + '/result/' + attempt.attempt_id });
   }
-  const profiles = await result_profile_all_for_quiz(env, attempt.quiz_id);
-  const profile = profiles[0] || null;
-  await attempt_mark_completed(env, attempt.attempt_id, 0, null, profile ? profile.id : null);
+
+  // Recalculate authoritative category scores from the saved answers on the server.
+  const scoring = await scoring_calculate(env, attempt);
+  const categoryScores = scoring.category_scores || {};
+  const quiz = await quiz_find(env, attempt.quiz_id) || {};
+  const resultContent = parseResultContent(quiz.result_content);
+
+  // Resolve winning category or tie.
+  const resolved = resolveCategoryContent(resultContent, categoryScores);
+  const categoryKey = resolved.categories.length ? resolved.categories.join('+') : null;
+  const profileId = scoring.result_profile ? scoring.result_profile.id : null;
+  const scoreTotal = scoring.score || 0;
+
+  await attempt_mark_completed(env, attempt.attempt_id, scoreTotal, categoryKey, profileId);
   ctx.session.resultOwners = ctx.session.resultOwners || {};
   ctx.session.resultOwners[attempt.attempt_id] = true;
   await event_log(env, 'quiz_complete', attempt.quiz_id, attempt.attempt_id);
+
   const lead = await lead_find(env, attempt.lead_id);
-  const quiz = await quiz_find(env, attempt.quiz_id);
   await webhook_dispatch_event(env, 'quiz.completed', {
     attempt_id: attempt.attempt_id,
-    score: null,
-    category: null,
+    score: scoreTotal,
+    category: categoryKey,
+    headline: resolved.content.headline || null,
     lead: lead ? { first_name: lead.first_name, email: lead.email, phone: lead.phone } : null,
     quiz: quiz ? { title: quiz.title, slug: quiz.slug } : null,
   });
@@ -2331,7 +2559,6 @@ async function handleShare(request, env, ctx) {
   return jsonResponse({ status: 'recorded' });
 }
 
-// -- admin auth --
 async function handleAdminLoginGet(request, env, ctx) {
   const session = ctx.session;
   if (session && session.userId) {
@@ -2387,7 +2614,6 @@ async function handleSetupPost(request, env, ctx) {
   return redirectResponse('/admin/login');
 }
 
-// -- admin pages --
 async function handleAdminDashboard(request, env, ctx) {
   const user = await is_admin(request, env, ctx.session);
   if (!user) return redirectResponse('/admin/login');
@@ -2397,12 +2623,12 @@ async function handleAdminDashboard(request, env, ctx) {
   return htmlResponse(viewAdminDashboard(stats, recent, chartData, ctx.session.csrf, user));
 }
 
-
 async function handleAdminQuizzesList(request, env, ctx) {
   const user = await is_admin(request, env, ctx.session);
   if (!user) return redirectResponse('/admin/login');
   return htmlResponse(viewAdminQuizzesList(ctx.session.csrf, user));
 }
+
 async function handleAdminQuizForm(request, env, ctx, params) {
   const user = await is_admin(request, env, ctx.session);
   if (!user) return redirectResponse('/admin/login');
@@ -2412,7 +2638,6 @@ async function handleAdminQuizForm(request, env, ctx, params) {
     if (!quiz) return htmlResponse(view404(env, ctx.session.csrf, user), 404);
     isEdit = true;
 
-    // Legacy migration: if landing_content is empty but sections has blocks, convert.
     if (!quiz.landing_content && quiz.sections) {
       quiz.landing_content = legacyBlocksToHtml(quiz.sections);
     }
@@ -2452,11 +2677,41 @@ async function handleAdminQuizSave(request, env, ctx) {
   const hero_image_size = String(form.get('hero_image_size') || 'md');
   const validImageSizes = ['sm','md','lg','xl','full'];
 
-  // Sanitize the rich-text landing content before storing it.
   const landingContentRaw = String(form.get('landing_content') || '').trim();
   let landingContentValue = null;
   if (landingContentRaw) {
     landingContentValue = await sanitizeHtml(landingContentRaw);
+  }
+
+  // Build result_content from form
+  const resultContentObj = parseResultContent(existing ? existing.result_content : null);
+  for (const key of RELATIONSHIP_CATEGORIES) {
+    resultContentObj.categories[key] = {
+      label:      String(form.get('rc_' + key + '_label') || resultContentObj.categories[key].label || '').slice(0, 200),
+      headline:   String(form.get('rc_' + key + '_headline') || '').slice(0, 300),
+      explanation:String(form.get('rc_' + key + '_explanation') || '').slice(0, 4000),
+      next_step:  String(form.get('rc_' + key + '_next_step') || '').slice(0, 2000),
+    };
+  }
+  resultContentObj.tie = {
+    headline:    String(form.get('rc_tie_headline') || '').slice(0, 300),
+    explanation: String(form.get('rc_tie_explanation') || '').slice(0, 4000),
+    next_step:   String(form.get('rc_tie_next_step') || '').slice(0, 2000),
+  };
+  resultContentObj.fallback = {
+    headline:    String(form.get('rc_fallback_headline') || '').slice(0, 300),
+    explanation: String(form.get('rc_fallback_explanation') || '').slice(0, 4000),
+    next_step:   String(form.get('rc_fallback_next_step') || '').slice(0, 2000),
+  };
+  // Overrides JSON is optional and validated
+  const overridesRaw = String(form.get('rc_overrides_json') || '').trim();
+  if (overridesRaw) {
+    try {
+      const parsed = JSON.parse(overridesRaw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        resultContentObj.overrides = parsed;
+      }
+    } catch { /* ignore malformed JSON — keep existing overrides */ }
   }
 
   const data = {
@@ -2481,6 +2736,7 @@ async function handleAdminQuizSave(request, env, ctx) {
     about_me_image: existing ? existing.about_me_image : null,
     about_me_image_size: existing ? existing.about_me_image_size : 'md',
     landing_content: landingContentValue,
+    result_content: JSON.stringify(resultContentObj),
   };
 
   let savedId;
@@ -2491,7 +2747,7 @@ async function handleAdminQuizSave(request, env, ctx) {
     savedId = await quiz_create(env, data);
   }
 
-  // Result profile (unchanged behaviour)
+  // Legacy result-profile update (kept for backward compat)
   const existingProfile = await env.DB.prepare(
     'SELECT * FROM result_profiles WHERE quiz_id = ? ORDER BY id ASC LIMIT 1'
   ).bind(savedId).first();
@@ -2566,7 +2822,6 @@ async function handleAdminSettingsPage(request, env, ctx) {
   return htmlResponse(viewAdminSettings(ctx.session.csrf, user));
 }
 
-// -- admin API --
 async function handleAdminQuizzesSearch(request, env, ctx) {
   const user = await is_admin(request, env, ctx.session);
   if (!user) return jsonResponse({ message: 'Authentication required.' }, 401);
@@ -2709,7 +2964,14 @@ async function handleAdminOptionSave(request, env, ctx) {
     try {
       const decoded = JSON.parse(wj);
       if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) throw new Error();
-      weights = decoded;
+      // Only keep known relationship categories and numeric values
+      const cleaned = {};
+      for (const [k, v] of Object.entries(decoded)) {
+        if (RELATIONSHIP_CATEGORIES.includes(k) && Number.isFinite(Number(v))) {
+          cleaned[k] = parseInt(v, 10);
+        }
+      }
+      weights = cleaned;
     } catch { return jsonResponse({ message: 'Category weights must be valid JSON.' }, 422); }
   }
   const data = {
@@ -2767,9 +3029,6 @@ async function handleAdminWebhookDelete(request, env, ctx, params) {
   return jsonResponse({ status: 'deleted' });
 }
 
-// ---------------------------------------------------------------------------
-// CSRF enforcement helper
-// ---------------------------------------------------------------------------
 async function verifyCsrf(request, ctx) {
   if (['GET','HEAD','OPTIONS'].includes(request.method)) return true;
   const expected = ctx.session && ctx.session.csrf;
@@ -2790,7 +3049,7 @@ async function verifyCsrf(request, ctx) {
 }
 
 // ---------------------------------------------------------------------------
-// Main fetch handler
+// Routes + Worker entry
 // ---------------------------------------------------------------------------
 const ROUTES = [
   ['GET',  '/',                                              handleHome],
@@ -2849,14 +3108,12 @@ export default {
 
       const match = matchRoute(request.method, pathname, ROUTES);
       if (!match) {
-        // SPA-ish fallback: GET unknown → 404 page, else 404 JSON
         if (request.method === 'GET') {
           return htmlResponse(view404(env, ctx.session.csrf, await current_user(request, env, ctx.session)), 404);
         }
         return jsonResponse({ message: 'Not found.' }, 404);
       }
 
-      // CSRF for state-changing requests
       if (!(await verifyCsrf(request, ctx))) {
         if (request.headers.get('X-Requested-With') === 'XMLHttpRequest' ||
             (request.headers.get('Accept') || '').includes('application/json')) {
@@ -2866,11 +3123,7 @@ export default {
       }
 
       const response = await match.handler(request, env, ctx, match.params);
-
-      // Always refresh the session cookie so the csrf token stays in sync and
-      // the resultOwners map persists after /submit.
-      const cookieResponse = await writeSessionCookie(response, ctx.session, env);
-      return cookieResponse;
+      return await writeSessionCookie(response, ctx.session, env);
     } catch (err) {
       console.error('Unhandled error', err && err.stack || err);
       return jsonResponse({ message: 'Internal error: ' + (err && err.message ? err.message : 'unknown') }, 500);
